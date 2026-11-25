@@ -73,12 +73,22 @@ class LauncherTests(unittest.TestCase):
         self.assertIn('Focus-VisibleWindowForPids', ps1)
         self.assertIn('falling back to in-process watcher', ps1)
         self.assertIn('Start-CdpWatchLoop -GuiMode $true -FixedPort $targetPort -LaunchApp $needLaunch -QuietConsole $false', ps1)
+        self.assertIn('Start-AntigravityProcess', ps1)
+        self.assertIn('Re-injected target after reload', ps1)
+        self.assertIn("return 'already'", ps1)
+        self.assertIn("return 'injected'", ps1)
+        self.assertNotIn('if ($injectedUrls.ContainsKey($tid) -and $injectedUrls[$tid] -eq $tUrl) { continue }', ps1)
+        self.assertNotRegex(ps1, r'&\s+\$sweepTargets\b')
+        self.assertRegex(ps1, r'\.\s+\$sweepTargets\b')
         self.assertIn(
             'https://raw.githubusercontent.com/yuexps/Antigravity-Hans/main/resources/antigravity-hans-overlay.js',
             ps1,
         )
         self.assertNotIn('/Antigravity-Hans/main/antigravity-hans-overlay.js', ps1)
         agy_zh = (ROOT / 'bin/agy-zh').read_text()
+        self.assertNotIn('if t["id"] not in injected_ids:', agy_zh)
+        self.assertIn('return "already"', agy_zh)
+        self.assertIn('return "injected"', agy_zh)
         self.assertIn(
             'https://raw.githubusercontent.com/yuexps/Antigravity-Hans/main/resources/antigravity-hans-overlay.js',
             agy_zh,

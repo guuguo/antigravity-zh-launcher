@@ -305,6 +305,48 @@ function Find-OriginalExe {
     return $null
 }
 
+function Start-AntigravityProcess {
+    param(
+        [string]$ExePath,
+        [string[]]$Arguments = @()
+    )
+    if ([string]::IsNullOrWhiteSpace($ExePath)) { return $null }
+    $workDir = Split-Path -Parent $ExePath
+    $hasArgs = ($null -ne $Arguments -and $Arguments.Count -gt 0)
+    try {
+        New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
+        Get-ChildItem -Path $LogsDir -Filter 'antigravity-app-*.log' -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTimeUtc -lt [DateTime]::UtcNow.AddDays(-1) } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+        $stamp = [System.Guid]::NewGuid().ToString('N').Substring(0, 8)
+        $outLog = Join-Path $LogsDir "antigravity-app-$stamp.out.log"
+        $errLog = Join-Path $LogsDir "antigravity-app-$stamp.err.log"
+        $spParams = @{
+            FilePath               = $ExePath
+            WorkingDirectory       = $workDir
+            RedirectStandardOutput = $outLog
+            RedirectStandardError  = $errLog
+            PassThru               = $true
+        }
+        if ($hasArgs) {
+            $spParams['ArgumentList'] = $Arguments
+        }
+        $proc = Start-Process @spParams
+        if ($null -ne $proc) { return $proc }
+    } catch {
+        Write-AgyLog -Level 'WARN' -Message "Redirected Antigravity launch failed ($($_.Exception.Message)); falling back to plain Start-Process."
+    }
+    $fallbackParams = @{
+        FilePath         = $ExePath
+        WorkingDirectory = $workDir
+        PassThru         = $true
+    }
+    if ($hasArgs) {
+        $fallbackParams['ArgumentList'] = $Arguments
+    }
+    return (Start-Process @fallbackParams)
+}
+
 function Get-SameSessionAntigravityPids {
     $mySession = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
     $pids = [int[]]@(
@@ -655,11 +697,11 @@ function Invoke-InjectTarget {
         [string]$OverlaySource,
         [string]$Fingerprint
     )
-    if (-not (Test-CdpTargetMatch -Target $Target)) { return $false }
+    if (-not (Test-CdpTargetMatch -Target $Target)) { return 'none' }
     $tid = [string]$Target.id
-    if ([string]::IsNullOrWhiteSpace($tid)) { return $false }
+    if ([string]::IsNullOrWhiteSpace($tid)) { return 'none' }
     $wsUrl = if ($Target.webSocketDebuggerUrl) { [string]$Target.webSocketDebuggerUrl } else { "ws://127.0.0.1:$Port/devtools/page/$tid" }
-    if (-not (Test-ValidCdpWsUrl -WsUrl $wsUrl -ExpectedPort $Port)) { return $false }
+    if (-not (Test-ValidCdpWsUrl -WsUrl $wsUrl -ExpectedPort $Port)) { return 'none' }
 
     $u = $null
     try { $u = [Uri]([string]$Target.url) } catch {}
@@ -673,7 +715,7 @@ function Invoke-InjectTarget {
 
         $chk = Invoke-CdpWsCommand -Ws $ws -Method 'Runtime.evaluate' -Params @{ expression = $checkExpr; returnByValue = $true }
         if ($null -ne $chk -and $null -ne $chk.result -and $chk.result.value -eq $true) {
-            return $true
+            return 'already'
         }
 
         $wrapped = "window.__antigravityZhPatchRequestedFingerprint = $fpJson;`n$OverlaySource"
@@ -687,7 +729,10 @@ function Invoke-InjectTarget {
 
         $null = Invoke-CdpWsCommand -Ws $ws -Method 'Runtime.evaluate' -Params @{ expression = $wrapped; awaitPromise = $false }
         $verify = Invoke-CdpWsCommand -Ws $ws -Method 'Runtime.evaluate' -Params @{ expression = $checkExpr; returnByValue = $true }
-        return ($null -ne $verify -and $null -ne $verify.result -and $verify.result.value -eq $true)
+        if ($null -ne $verify -and $null -ne $verify.result -and $verify.result.value -eq $true) {
+            return 'injected'
+        }
+        return 'none'
     } finally {
         if ($null -ne $ws) {
             try { $ws.Dispose() } catch {}
@@ -738,7 +783,7 @@ function Start-CdpWatchLoop {
             $focused = Focus-VisibleWindowForPids -TargetPids @(Get-SameSessionAntigravityPids)
             if (-not $focused -and $origExe) {
                 Write-AgyLog -Level 'INFO' -Message 'Debug port active with no visible window; opening Antigravity window.'
-                $null = Start-Process -FilePath $origExe -WorkingDirectory (Split-Path -Parent $origExe) -PassThru
+                $null = Start-AntigravityProcess -ExePath $origExe
             }
         }
     } else {
@@ -750,7 +795,7 @@ function Start-CdpWatchLoop {
         }
         $port = if ($FixedPort -gt 0) { $FixedPort } else { Get-FreeLoopbackPort }
         & $writeStep 'INFO' $TagInfo "$(Resolve-ZhText '[3/4] \u6b63\u5728\u542f\u52a8 Antigravity \u4e2d\u6587\u8c03\u8bd5\u4f1a\u8bdd (\u7aef\u53e3') $port)..." ''
-        $null = Start-Process -FilePath $origExe -ArgumentList @("--remote-debugging-port=$port", '--remote-debugging-address=127.0.0.1') -WorkingDirectory (Split-Path -Parent $origExe) -PassThru
+        $null = Start-AntigravityProcess -ExePath $origExe -Arguments @("--remote-debugging-port=$port", '--remote-debugging-address=127.0.0.1')
         Write-LaunchState -StateFile $StateFile -Code 'PHASE' -Message "APP_LAUNCHED|$port"
         $ready = $false
         $launchStart = [DateTime]::UtcNow
@@ -765,6 +810,9 @@ function Start-CdpWatchLoop {
             if ($elapsedSec -ge ($lastReportSec + 3)) {
                 $lastReportSec = $elapsedSec
                 Write-LaunchState -StateFile $StateFile -Code 'PHASE' -Message "WAIT_CDP|$elapsedSec"
+                if (-not $QuietConsole -and [string]::IsNullOrWhiteSpace($StateFile)) {
+                    Write-Host "      $(Resolve-ZhText '\u4ecd\u5728\u7b49\u5f85\u8c03\u8bd5\u7aef\u53e3\u5c31\u7eea') (${elapsedSec}s)..." -ForegroundColor DarkGray
+                }
             }
             Start-Sleep -Milliseconds 300
         }
@@ -785,40 +833,72 @@ function Start-CdpWatchLoop {
     $injectedUrls = @{}
     $loggedTargets = @{}
     $loggedErrors = @{}
+    $processTarget = {
+        param(
+            [object]$TargetObj,
+            [string]$EventName = ''
+        )
+        $tid = [string]$TargetObj.id
+        if ([string]::IsNullOrWhiteSpace($tid)) { return }
+        $tType = [string]$TargetObj.type
+        $tUrl = [string]$TargetObj.url
+        $matched = Test-CdpTargetMatch -Target $TargetObj
+        $targetKey = "$tid|$tType|$tUrl"
+        if (-not $loggedTargets.ContainsKey($targetKey)) {
+            $loggedTargets[$targetKey] = $true
+            $discMsg = if ($EventName) {
+                "Target event ($EventName): id=$tid type=$tType matched=$matched url=$tUrl"
+            } else {
+                "Target discovered: id=$tid type=$tType matched=$matched url=$tUrl"
+            }
+            Write-AgyLog -Level 'INFO' -Message $discMsg
+            if (-not $matched -and -not [string]::IsNullOrWhiteSpace($tUrl) -and ($tType -notin @('worker', 'service_worker', 'shared_worker', 'background_page'))) {
+                Write-LaunchState -StateFile $StateFile -Code 'SKIP' -Message "$tType|$tUrl"
+            }
+        }
+        if (-not $matched) { return }
+        try {
+            $injectStatus = Invoke-InjectTarget -Target $TargetObj -Port $port -OverlaySource $overlaySource -Fingerprint $fingerprint
+            if ($injectStatus -eq 'injected') {
+                $wasInjected = $injectedUrls.ContainsKey($tid)
+                $injectedUrls[$tid] = $tUrl
+                $logVerb = if ($wasInjected) {
+                    if ($EventName) { 'Re-injected target from event after reload' } else { 'Re-injected target after reload' }
+                } else {
+                    if ($EventName) { 'Injected target from event' } else { 'Injected target' }
+                }
+                Write-AgyLog -Level 'INFO' -Message "${logVerb}: id=$tid type=$tType url=$tUrl"
+                Write-LaunchState -StateFile $StateFile -Code 'INJECTED' -Message "$($injectedUrls.Count)|$tUrl"
+                if (-not $QuietConsole) {
+                    $okMsg = if ($wasInjected) {
+                        Resolve-ZhText '\u68c0\u6d4b\u5230\u7a97\u53e3\u91cd\u8f7d\uff0c\u5df2\u81ea\u52a8\u8865\u6ce8\u4e2d\u6587\u754c\u9762'
+                    } else {
+                        Resolve-ZhText '\u5df2\u5b8c\u6210\u4e2d\u6587\u754c\u9762\u6ce8\u5165'
+                    }
+                    Write-Host "$TagOk $okMsg ($tUrl)" -ForegroundColor Green
+                }
+            } elseif ($injectStatus -eq 'already') {
+                if (-not $injectedUrls.ContainsKey($tid) -or $injectedUrls[$tid] -ne $tUrl) {
+                    $injectedUrls[$tid] = $tUrl
+                    Write-LaunchState -StateFile $StateFile -Code 'INJECTED' -Message "$($injectedUrls.Count)|$tUrl"
+                }
+            }
+        } catch {
+            $errText = $_.Exception.Message
+            $errKey = "$tid|$tUrl|$errText"
+            if (-not $loggedErrors.ContainsKey($errKey)) {
+                $loggedErrors[$errKey] = $true
+                $errPrefix = if ($EventName) { 'Inject failed from event' } else { 'Inject failed' }
+                & $writeStep 'WARN' $TagWarn "$errPrefix (id=$tid type=$tType url=$tUrl): $errText" 'Yellow'
+                Write-LaunchState -StateFile $StateFile -Code 'WARN' -Message "$tUrl | $errText"
+            }
+        }
+    }
     $sweepTargets = {
         $targets = Invoke-LocalCdpJson -Port $port -Path '/json/list'
         if ($null -ne $targets) {
             foreach ($t in $targets) {
-                $tid = [string]$t.id
-                if ([string]::IsNullOrWhiteSpace($tid)) { continue }
-                $tType = [string]$t.type
-                $tUrl = [string]$t.url
-                $matched = Test-CdpTargetMatch -Target $t
-                $targetKey = "$tid|$tType|$tUrl"
-                if (-not $loggedTargets.ContainsKey($targetKey)) {
-                    $loggedTargets[$targetKey] = $true
-                    Write-AgyLog -Level 'INFO' -Message "Target discovered: id=$tid type=$tType matched=$matched url=$tUrl"
-                    if (-not $matched -and -not [string]::IsNullOrWhiteSpace($tUrl) -and ($tType -notin @('worker', 'service_worker', 'shared_worker', 'background_page'))) {
-                        Write-LaunchState -StateFile $StateFile -Code 'SKIP' -Message "$tType|$tUrl"
-                    }
-                }
-                if (-not $matched) { continue }
-                if ($injectedUrls.ContainsKey($tid) -and $injectedUrls[$tid] -eq $tUrl) { continue }
-                try {
-                    if (Invoke-InjectTarget -Target $t -Port $port -OverlaySource $overlaySource -Fingerprint $fingerprint) {
-                        $injectedUrls[$tid] = $tUrl
-                        Write-AgyLog -Level 'INFO' -Message "Injected target: id=$tid type=$tType url=$tUrl"
-                        Write-LaunchState -StateFile $StateFile -Code 'INJECTED' -Message "$($injectedUrls.Count)|$tUrl"
-                    }
-                } catch {
-                    $errText = $_.Exception.Message
-                    $errKey = "$tid|$tUrl|$errText"
-                    if (-not $loggedErrors.ContainsKey($errKey)) {
-                        $loggedErrors[$errKey] = $true
-                        & $writeStep 'WARN' $TagWarn "Inject failed (id=$tid type=$tType url=$tUrl): $errText" 'Yellow'
-                        Write-LaunchState -StateFile $StateFile -Code 'WARN' -Message "$tUrl | $errText"
-                    }
-                }
+                . $processTarget -TargetObj $t -EventName ''
             }
         }
     }
@@ -843,7 +923,7 @@ function Start-CdpWatchLoop {
 
     $browserWs = $null
     try {
-        & $sweepTargets
+        . $sweepTargets
         $lastConnectErr = ''
         for ($i = 0; $i -lt 15; $i++) {
             try {
@@ -874,7 +954,7 @@ function Start-CdpWatchLoop {
 
         try {
             while ($true) {
-                $fastInitial = ($injectedUrls.Count -eq 0 -and ([DateTime]::UtcNow - $loopStart).TotalSeconds -lt 10)
+                $fastInitial = (([DateTime]::UtcNow - $loopStart).TotalSeconds -lt 15)
                 $waitMs = if ($fastInitial) { 500 } else { 1500 }
                 $sweepSec = if ($fastInitial) { 0.5 } else { 2.0 }
 
@@ -905,39 +985,14 @@ function Start-CdpWatchLoop {
                                         $tid = [string]$info.targetId
                                         $tType = [string]$info.type
                                         $tUrl = [string]$info.url
-                                        if ($tid -and (-not $injectedUrls.ContainsKey($tid) -or $injectedUrls[$tid] -ne $tUrl)) {
+                                        if ($tid -and ($evt.method -eq 'Target.targetCreated' -or -not $injectedUrls.ContainsKey($tid) -or $injectedUrls[$tid] -ne $tUrl)) {
                                             $tObj = [PSCustomObject]@{
                                                 id                   = $tid
                                                 type                 = $tType
                                                 url                  = $tUrl
                                                 webSocketDebuggerUrl = "ws://127.0.0.1:$port/devtools/page/$tid"
                                             }
-                                            $matched = Test-CdpTargetMatch -Target $tObj
-                                            $targetKey = "$tid|$tType|$tUrl"
-                                            if (-not $loggedTargets.ContainsKey($targetKey)) {
-                                                $loggedTargets[$targetKey] = $true
-                                                Write-AgyLog -Level 'INFO' -Message "Target event ($($evt.method)): id=$tid type=$tType matched=$matched url=$tUrl"
-                                                if (-not $matched -and -not [string]::IsNullOrWhiteSpace($tUrl) -and ($tType -notin @('worker', 'service_worker', 'shared_worker', 'background_page'))) {
-                                                    Write-LaunchState -StateFile $StateFile -Code 'SKIP' -Message "$tType|$tUrl"
-                                                }
-                                            }
-                                            if ($matched) {
-                                                try {
-                                                    if (Invoke-InjectTarget -Target $tObj -Port $port -OverlaySource $overlaySource -Fingerprint $fingerprint) {
-                                                        $injectedUrls[$tid] = $tUrl
-                                                        Write-AgyLog -Level 'INFO' -Message "Injected target from event: id=$tid type=$tType url=$tUrl"
-                                                        Write-LaunchState -StateFile $StateFile -Code 'INJECTED' -Message "$($injectedUrls.Count)|$tUrl"
-                                                    }
-                                                } catch {
-                                                    $errText = $_.Exception.Message
-                                                    $errKey = "$tid|$tUrl|$errText"
-                                                    if (-not $loggedErrors.ContainsKey($errKey)) {
-                                                        $loggedErrors[$errKey] = $true
-                                                        & $writeStep 'WARN' $TagWarn "Inject failed from event (id=$tid type=$tType url=$tUrl): $errText" 'Yellow'
-                                                        Write-LaunchState -StateFile $StateFile -Code 'WARN' -Message "$tUrl | $errText"
-                                                    }
-                                                }
-                                            }
+                                            . $processTarget -TargetObj $tObj -EventName $evt.method
                                         }
                                     }
                                 } catch {}
@@ -980,13 +1035,13 @@ function Start-CdpWatchLoop {
                         Write-AgyLog -Level 'INFO' -Message 'CDP browser WebSocket reconnected.'
                         $loopCts = [System.Threading.CancellationTokenSource]::new()
                         $recvTask = $browserWs.ReceiveAsync($bSeg, $loopCts.Token)
-                        & $sweepTargets
+                        . $sweepTargets
                     }
                 }
 
                 if (([DateTime]::UtcNow - $lastSweep).TotalSeconds -ge $sweepSec) {
                     $lastSweep = [DateTime]::UtcNow
-                    & $sweepTargets
+                    . $sweepTargets
                     if (@(Get-SameSessionAntigravityPids).Count -eq 0 -and $null -eq (Invoke-LocalCdpJson -Port $port -Path '/json/version')) {
                         Write-AgyLog -Level 'INFO' -Message 'Antigravity process exited; stopping watcher.'
                         break
@@ -1040,7 +1095,7 @@ function Start-GuiManagedLaunch {
         $focused = Focus-VisibleWindowForPids -TargetPids @(Get-SameSessionAntigravityPids)
         if (-not $focused -and $origExe) {
             Write-AgyLog -Level 'INFO' -Message 'Debug port active with no visible window; opening Antigravity window.'
-            $null = Start-Process -FilePath $origExe -WorkingDirectory (Split-Path -Parent $origExe) -PassThru
+            $null = Start-AntigravityProcess -ExePath $origExe
         }
     } else {
         if (-not $origExe) {

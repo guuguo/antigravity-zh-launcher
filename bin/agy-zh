@@ -553,7 +553,7 @@ def ensure_injected(target, port, overlay_source, fingerprint):
     ws_path = target.get("_ws_path") or f"/devtools/page/{target['id']}"
     is_swarm = is_swarm_target(target)
     if not is_target_page(target.get("url", "")) and not is_swarm:
-        return False
+        return "none"
 
     ws = MiniWebSocket(port, ws_path, timeout=4.0)
     try:
@@ -564,7 +564,7 @@ def ensure_injected(target, port, overlay_source, fingerprint):
         )
         res = ws.call("Runtime.evaluate", {"expression": check_expr, "returnByValue": True})
         if (res.get("result") or {}).get("value") is True:
-            return True
+            return "already"
 
         wrapped = f"window.__antigravityZhPatchRequestedFingerprint = {json.dumps(fingerprint)};\n{overlay_source}"
         if is_swarm:
@@ -587,7 +587,9 @@ def ensure_injected(target, port, overlay_source, fingerprint):
 
         ws.call("Runtime.evaluate", {"expression": wrapped, "awaitPromise": False}, timeout=8.0)
         verify = ws.call("Runtime.evaluate", {"expression": check_expr, "returnByValue": True})
-        return (verify.get("result") or {}).get("value") is True
+        if (verify.get("result") or {}).get("value") is True:
+            return "injected"
+        return "none"
     finally:
         ws.close()
 
@@ -687,7 +689,7 @@ def main():
         sys.exit(1)
 
     write_pidfile()
-    injected_ids = set()
+    injected_urls = {}
     browser_ws = None
 
     def connect_browser():
@@ -701,8 +703,8 @@ def main():
     try:
         for t in check_port_targets(port):
             try:
-                if ensure_injected(t, port, overlay_source, fingerprint):
-                    injected_ids.add(t["id"])
+                if ensure_injected(t, port, overlay_source, fingerprint) in ("injected", "already"):
+                    injected_urls[t["id"]] = t.get("url", "")
             except Exception:
                 pass
 
@@ -720,19 +722,22 @@ def main():
             sys.exit(1)
 
         print(f"[成功] 已进入 {app_name} 监视状态 (端口 {port})。")
-        last_sweep = time.monotonic()
+        loop_start = time.monotonic()
+        last_sweep = loop_start
 
         while not stopping:
             now = time.monotonic()
-            if now - last_sweep >= 2.0:
+            fast_initial = (now - loop_start) < 15.0
+            sweep_interval = 0.5 if fast_initial else 2.0
+            recv_timeout = 0.5 if fast_initial else 1.5
+            if now - last_sweep >= sweep_interval:
                 last_sweep = now
                 for t in check_port_targets(port):
-                    if t["id"] not in injected_ids:
-                        try:
-                            if ensure_injected(t, port, overlay_source, fingerprint):
-                                injected_ids.add(t["id"])
-                        except Exception:
-                            pass
+                    try:
+                        if ensure_injected(t, port, overlay_source, fingerprint) in ("injected", "already"):
+                            injected_urls[t["id"]] = t.get("url", "")
+                    except Exception:
+                        pass
                 if not list_antigravity_procs()[1]:
                     try:
                         read_cdp_json(port, "/json/version", timeout=0.6)
@@ -740,26 +745,31 @@ def main():
                         break
 
             try:
-                raw_msg = browser_ws.recv_text(timeout=1.5)
+                raw_msg = browser_ws.recv_text(timeout=recv_timeout)
                 msg = json.loads(raw_msg)
                 method = msg.get("method")
                 params = msg.get("params") or {}
                 if method == "Target.targetDestroyed":
                     tid = params.get("targetId")
-                    injected_ids.discard(tid)
+                    injected_urls.pop(tid, None)
                 elif method in ("Target.targetCreated", "Target.targetInfoChanged"):
                     info = params.get("targetInfo") or {}
                     tid = info.get("targetId") or ""
-                    if tid and info.get("type") not in ignored_types and tid not in injected_ids:
+                    t_url = info.get("url") or ""
+                    if (
+                        tid
+                        and info.get("type") not in ignored_types
+                        and (method == "Target.targetCreated" or injected_urls.get(tid) != t_url)
+                    ):
                         t = {
                             "id": tid,
                             "type": info.get("type", ""),
-                            "url": info.get("url", ""),
+                            "url": t_url,
                             "_ws_path": f"/devtools/page/{tid}",
                         }
                         try:
-                            if ensure_injected(t, port, overlay_source, fingerprint):
-                                injected_ids.add(tid)
+                            if ensure_injected(t, port, overlay_source, fingerprint) in ("injected", "already"):
+                                injected_urls[tid] = t_url
                         except Exception:
                             pass
             except (TimeoutError, socket.timeout):

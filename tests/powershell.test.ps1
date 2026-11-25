@@ -15,6 +15,12 @@ if ($psLauncher -notmatch 'CreateNoWindow') { throw 'Missing detached CreateNoWi
 if ($psLauncher -match '\.Split\(@\(') { throw 'PowerShell 5.1 String.Split(string[], StringSplitOptions) overload regression in bin/agy-zh.ps1' }
 if ($psLauncher -match '&\s+\$drainState\b' -or $psLauncher -notmatch '\.\s+\$drainState\b') { throw 'Child-scope $drainState invocation regression in bin/agy-zh.ps1' }
 if ($psLauncher -notmatch 'falling back to in-process watcher') { throw 'Missing in-process watcher fallback for policy-blocked child spawn in bin/agy-zh.ps1' }
+if ($psLauncher -notmatch 'Start-AntigravityProcess') { throw 'Missing Start-AntigravityProcess redirection helper in bin/agy-zh.ps1' }
+if ($psLauncher -notmatch 'Re-injected target after reload') { throw 'Missing same-URL reload re-injection logging in bin/agy-zh.ps1' }
+if ($psLauncher -match '&\s+\$sweepTargets\b' -or $psLauncher -notmatch '\.\s+\$sweepTargets\b') { throw 'Child-scope $sweepTargets invocation regression in bin/agy-zh.ps1' }
+if ($psLauncher.Contains('if ($injectedUrls.ContainsKey($tid) -and $injectedUrls[$tid] -eq $tUrl) { continue }')) {
+    throw 'Stale same-URL sweep skip regression in bin/agy-zh.ps1'
+}
 if ($psLauncher -notmatch 'https://raw\.githubusercontent\.com/yuexps/Antigravity-Hans/main/resources/antigravity-hans-overlay\.js') {
     throw 'Missing updated resources/antigravity-hans-overlay.js URL in bin/agy-zh.ps1'
 }
