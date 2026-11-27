@@ -131,3 +131,19 @@ console.log('PASS language switch ja -> ko -> original');
   assert.equal(early.label.nodeValue, 'Settings');
   console.log('PASS early-document null documentElement guard: zh-CN');
 }
+{
+  // 上游 Antigravity-Hans 词库已生效时，zh-CN 内置词库不得 cleanup 掉它，
+  // 否则只存在于上游词库的文案（Turbo、This Computer 等）会漏翻。
+  const f = fixture();
+  let cleaned = false;
+  f.window.__antigravityZhPatchInstalled = true;
+  f.window.__antigravityZhSetLang = () => {};
+  f.window.__antigravityZhPatchCleanup = () => { cleaned = true; };
+  inject(f, 'zh-CN');
+  assert.equal(cleaned, false, 'zh-CN must not tear down the upstream overlay');
+  assert.equal(f.label.nodeValue, 'Settings');
+  assert.equal(f.tooltip.getAttribute('title'), 'Copy');
+  assert.equal(f.document.documentElement.lang, 'en');
+  assert.equal(f.window.__antigravityI18nInstalled, undefined);
+  console.log('PASS zh-CN defers to upstream Antigravity-Hans overlay');
+}
