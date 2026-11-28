@@ -97,6 +97,8 @@ class LauncherTests(unittest.TestCase):
         self.assertNotIn('?.', (ROOT / 'lib/locale.ps1').read_text())
         self.assertNotRegex((ROOT / 'lib/zh-overlay.ps1').read_text(), r'\$[A-Za-z0-9_:]+\?\.')
         self.assertIn('Write-Warning', (ROOT / 'lib/zh-overlay.ps1').read_text())
+        self.assertIn('side-question-followup-user', (ROOT / 'lib/zh-overlay.ps1').read_text())
+        self.assertIn('agy-zh-v8', ps1)
         shortcut_fn = re.search(r'function New-ZhShortcut\s*\{(.*?)\n\}', ps1, re.S)
         self.assertIsNotNone(shortcut_fn)
         self.assertIn('powershell.exe', shortcut_fn.group(1))
@@ -327,16 +329,22 @@ const antigravityContainerSelector = [
   }
 })();
 """
+        modular_236_base = modular_base.replace(
+            '[data-testid="user-input-step"], [aria-label="User message"], [aria-label="用户消息"]',
+            '[data-testid="user-input-step"], [data-testid="side-question-followup-user"], [aria-label="User message"], [aria-label="用户消息"]',
+        )
         with tempfile.TemporaryDirectory(prefix='agy-layouts-') as tmp:
-            for name, content in [('legacy', legacy_base), ('modular', modular_base)]:
+            for name, content in [('legacy', legacy_base), ('modular', modular_base), ('modular_236', modular_236_base)]:
                 base = Path(tmp, f'{name}-base.js')
                 out = Path(tmp, f'{name}-out.js')
                 base.write_text(content, encoding='utf-8')
-                res = self.run_command('python3', str(ROOT / 'lib/zh-overlay.py'), str(base), str(out), 'agy-zh-v7', 'true')
+                res = self.run_command('python3', str(ROOT / 'lib/zh-overlay.py'), str(base), str(out), 'agy-zh-v8', 'true')
                 self.assertNotIn('[警告]', res.stderr)
                 built = out.read_text(encoding='utf-8')
                 self.assertIn('syncChineseConversationTitles', built)
                 self.assertIn('[data-testid="home-greeting"]', built)
+                if name == 'modular_236':
+                    self.assertIn('[data-testid="side-question-followup-user"]', built)
                 self.run_command('node', '--check', str(out))
                 full = Path(tmp, f'{name}-full.js')
                 self.run_command('python3', str(ROOT / 'lib/locale.py'), 'build', 'zh-CN', str(full), str(base), 'true')
@@ -386,7 +394,7 @@ const antigravityContainerSelector = [
             self.assertEqual(base.read_text(encoding='utf-8'), cached_text)
             overlay = data_dir / 'antigravity-hans-overlay.js'
             overlay_text = overlay.read_text(encoding='utf-8')
-            self.assertIn('agy-zh-v7', overlay_text)
+            self.assertIn('agy-zh-v8', overlay_text)
             self.assertIn('// cached-sentinel', overlay_text)
             self.run_command('node', '--check', str(overlay))
 

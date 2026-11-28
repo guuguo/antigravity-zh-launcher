@@ -96,10 +96,17 @@ for (const code of Object.keys(index)) {
 const f=fixture();
 inject(f,'ja');
 inject(f,'ko');
-assert.equal(f.label.nodeValue,JSON.parse(fs.readFileSync(path.join(root,'locales/ko.json'))).phrases.Settings);
+const koPhrases = JSON.parse(fs.readFileSync(path.join(root,'locales/ko.json'))).phrases;
+assert.equal(f.label.nodeValue,koPhrases.Settings);
 f.window.__antigravityZhSetLang('en');
 assert.equal(f.label.nodeValue,'Settings');
-console.log('PASS language switch ja -> ko -> original');
+assert.equal(f.window._VSCODE_NLS_MESSAGES[0],'Settings');
+assert.equal(f.window.__antigravityZhPatchInstalled,true);
+f.window.__antigravityZhSetLang('ko');
+assert.equal(f.label.nodeValue,koPhrases.Settings);
+assert.equal(f.window._VSCODE_NLS_MESSAGES[0],koPhrases.Settings);
+assert.equal(f.document.documentElement.lang,'ko');
+console.log('PASS language switch ja -> ko -> original -> ko');
 {
   const early = fixture();
   early.document.readyState = 'loading';
@@ -139,22 +146,83 @@ console.log('PASS language switch ja -> ko -> original');
   const f = fixture();
   let cleaned = false;
   f.window.__antigravityZhPatchInstalled = true;
+  f.window.__observedDocument = f.document;
+  f.window.__antigravityZhPatchRequestedFingerprint = 'fp-fallback';
   f.window.__antigravityZhPatchCleanup = () => { cleaned = true; };
   inject(f, 'zh-CN');
   assert.equal(cleaned, false, 'zh-CN must not tear down the upstream overlay');
+  assert.equal(f.window.__antigravityZhPatchFingerprint, 'fp-fallback');
   assert.equal(f.label.nodeValue, 'Settings');
   assert.equal(f.tooltip.getAttribute('title'), 'Copy');
   assert.equal(f.document.documentElement.lang, 'en');
   assert.equal(f.window.__antigravityI18nInstalled, undefined);
   console.log('PASS zh-CN defers to upstream Antigravity-Hans overlay before DOMContentLoaded');
 
+  // __observedDocument 不是当前 document（残留状态）时，zh-CN 不得跳过安装。
+  const stale = fixture();
+  let staleCleaned = false;
+  stale.window.__antigravityZhPatchInstalled = true;
+  stale.window.__observedDocument = {};
+  stale.window.__antigravityZhPatchCleanup = () => { staleCleaned = true; };
+  const zhLocale = inject(stale, 'zh-CN');
+  assert.equal(staleCleaned, true, 'zh-CN must reinstall when __observedDocument does not match current document');
+  assert.equal(stale.label.nodeValue, zhLocale.phrases.Settings);
+  assert.equal(stale.window.__antigravityI18nInstalled, true);
+  console.log('PASS zh-CN does not defer when __observedDocument is stale');
+
   // 内置 overlay 已经接管时仍应重新安装，避免本地切换语言后再也装不回来。
   const g = fixture();
   let reclaimed = false;
   g.window.__antigravityZhPatchInstalled = true;
+  g.window.__observedDocument = g.document;
   g.window.__antigravityI18nInstalled = true;
   g.window.__antigravityZhPatchCleanup = () => { reclaimed = true; };
   inject(g, 'zh-CN');
   assert.equal(reclaimed, true, 'zh-CN must reclaim when the built-in overlay is already installed');
   console.log('PASS zh-CN reclaims when the built-in overlay is already installed');
+}
+{
+  // 2.36 词条、防误译保护与 patchNls 单次执行验证。
+  const turbo = text('Turbo');
+  const scope = text('This Computer');
+  const sideFollowup = text('Settings', new Element('div', {'data-testid':'side-question-followup-user'}));
+  const fileTitle = text('Settings', new Element('span', {'data-testid':'file-title-name'}));
+  const branchPill = text('Settings', new Element('span', {'data-testid':'branch-pill-label'}));
+  const mdRoot = new Element('div', {'data-markdown-root':''});
+  const markdownProse = text('Settings', mdRoot);
+  const markdownCtrl = text('Copy', new Element('button', {'data-testid':'code-block-preview-toggle'}, mdRoot));
+  const coordStrong = text('Settings', new Element('strong', {}, new Element('div', {'data-testid':'coordinator-welcome'})));
+  const projectHdr = new Element('div', {'data-testid':'project-header', 'data-project-label':'Auto'});
+  const projectName = text('Auto', new Element('span', {}, projectHdr));
+  const projectAction = text('Settings', new Element('span', {}, projectHdr));
+  const nodes = [turbo, scope, sideFollowup, fileTitle, branchPill, mdRoot, markdownProse, markdownCtrl, coordStrong, projectHdr, projectName, projectAction];
+  const document = {
+    readyState: 'complete', documentElement:{lang:'en'},
+    createTreeWalker() { let i = 0; return {nextNode: () => nodes[i++] || null}; }
+  };
+  const callbacks = [];
+  const window = {_VSCODE_NLS_MESSAGES:['Settings','unlisted string','{0}'], addEventListener(){}, removeEventListener(){}};
+  const context = vm.createContext({
+    window, document, Intl, Map, Node:{TEXT_NODE:3}, NodeFilter:{SHOW_TEXT:4,SHOW_ELEMENT:1},
+    MutationObserver:class { constructor(callback) {this.callback=callback;callbacks.push(callback);} observe() {} disconnect() {} },
+    queueMicrotask: callback => callbacks.push(callback)
+  });
+  const jaLocale = inject({context}, 'ja');
+  assert.equal(turbo.nodeValue, jaLocale.phrases.Turbo);
+  assert.equal(scope.nodeValue, jaLocale.phrases['This Computer']);
+  assert.equal(sideFollowup.nodeValue, 'Settings');
+  assert.equal(fileTitle.nodeValue, 'Settings');
+  assert.equal(branchPill.nodeValue, 'Settings');
+  assert.equal(markdownProse.nodeValue, 'Settings');
+  assert.equal(markdownCtrl.nodeValue, jaLocale.phrases.Copy);
+  assert.equal(coordStrong.nodeValue, 'Settings');
+  assert.equal(projectName.nodeValue, 'Auto');
+  assert.equal(projectAction.nodeValue, jaLocale.phrases.Settings);
+  assert.equal(window._VSCODE_NLS_MESSAGES[0], jaLocale.phrases.Settings);
+  // 后续 MutationObserver sweep 不应再重复执行 patchNls。
+  window._VSCODE_NLS_MESSAGES[1] = 'Copy';
+  callbacks[0]();
+  callbacks.at(-1)();
+  assert.equal(window._VSCODE_NLS_MESSAGES[1], 'Copy');
+  console.log('PASS 2.36 keys, protected selectors, and single-run patchNls');
 }

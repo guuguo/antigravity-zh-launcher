@@ -193,9 +193,24 @@ if (element.closest('[data-testid="user-input-step"], [aria-label="User message"
 if (element.closest('[data-testid="user-message-bubble"], [data-testid="user-message-content"], .agy-user-bubble, .agy-user-bubble-frame')) {
   return true;
 }"""
+    user_skip_236_anchor_core = """// 跳过用户输入
+if (element.closest('[data-testid="user-input-step"], [data-testid="side-question-followup-user"], [aria-label="User message"], [aria-label="用户消息"]')) {
+  return true;
+}"""
+    user_skip_236_patched_core = """// 跳过用户输入气泡正文与侧边追问用户输入（保留 user-message-actions 时间戳与操作按钮）
+if (element.closest('[data-testid="user-message-bubble"], [data-testid="user-message-content"], [data-testid="side-question-followup-user"], .agy-user-bubble, .agy-user-bubble-frame')) {
+  return true;
+}"""
     js = replace_first_match(
         js,
-        [(indent_lines(user_skip_anchor_core, indent), indent_lines(user_skip_patched_core, indent)) for indent in ("    ", "  ")],
+        [
+            (indent_lines(user_skip_anchor_core, indent), indent_lines(user_skip_patched_core, indent))
+            for indent in ("    ", "  ")
+        ]
+        + [
+            (indent_lines(user_skip_236_anchor_core, indent), indent_lines(user_skip_236_patched_core, indent))
+            for indent in ("    ", "  ")
+        ],
         "user_input_skip",
     )
 

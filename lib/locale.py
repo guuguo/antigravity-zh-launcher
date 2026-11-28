@@ -25,7 +25,7 @@ def main():
         if code == 'zh-CN' and base_path is not None and base_path.is_file() and base_path.stat().st_size > 0:
             # Retain the original Chinese enhancement behavior and layer expanded zh-CN dictionary/rules.
             subprocess.run([sys.executable, str(root / 'lib/zh-overlay.py'), str(base_path),
-                            str(output), 'agy-zh-v7', force_flag], check=True)
+                            str(output), 'agy-zh-v8', force_flag], check=True)
             base_script = output.read_text(encoding='utf-8')
             marker = '/*__AGY_ZH_I18N_LAYER__*/'
             if marker in base_script:

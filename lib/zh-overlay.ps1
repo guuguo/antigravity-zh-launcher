@@ -258,9 +258,23 @@ function Ensure-EnhancedOverlay {
             '  return true;',
             '}'
         ) -join "`n")
+        $userSkip236AnchorCore = Resolve-OverlayUnicode (@(
+            '// \u8df3\u8fc7\u7528\u6237\u8f93\u5165',
+            'if (element.closest(''[data-testid="user-input-step"], [data-testid="side-question-followup-user"], [aria-label="User message"], [aria-label="\u7528\u6237\u6d88\u606f"]'')) {',
+            '  return true;',
+            '}'
+        ) -join "`n")
+        $userSkip236PatchedCore = Resolve-OverlayUnicode (@(
+            '// \u8df3\u8fc7\u7528\u6237\u8f93\u5165\u6c14\u6ce1\u6b63\u6587\u4e0e\u4fa7\u8fb9\u8ffd\u95ee\u7528\u6237\u8f93\u5165\uff08\u4fdd\u7559 user-message-actions \u65f6\u95f4\u6233\u4e0e\u64cd\u4f5c\u6309\u94ae\uff09',
+            'if (element.closest(''[data-testid="user-message-bubble"], [data-testid="user-message-content"], [data-testid="side-question-followup-user"], .agy-user-bubble, .agy-user-bubble-frame'')) {',
+            '  return true;',
+            '}'
+        ) -join "`n")
         $js = Replace-FirstMatch -Text $js -Variants @(
             @{ Target = (Add-LineIndent -Text $userSkipAnchorCore -Indent '    '); Replacement = (Add-LineIndent -Text $userSkipPatchedCore -Indent '    ') },
-            @{ Target = (Add-LineIndent -Text $userSkipAnchorCore -Indent '  ');   Replacement = (Add-LineIndent -Text $userSkipPatchedCore -Indent '  ') }
+            @{ Target = (Add-LineIndent -Text $userSkipAnchorCore -Indent '  ');   Replacement = (Add-LineIndent -Text $userSkipPatchedCore -Indent '  ') },
+            @{ Target = (Add-LineIndent -Text $userSkip236AnchorCore -Indent '    '); Replacement = (Add-LineIndent -Text $userSkip236PatchedCore -Indent '    ') },
+            @{ Target = (Add-LineIndent -Text $userSkip236AnchorCore -Indent '  ');   Replacement = (Add-LineIndent -Text $userSkip236PatchedCore -Indent '  ') }
         ) -Label 'user_input_skip'
 
         $agentRespAnchorCore = Resolve-OverlayUnicode (@(

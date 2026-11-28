@@ -59,7 +59,7 @@ try {
     . (Join-Path $root 'lib/locale.ps1')
     . (Join-Path $root 'lib/zh-overlay.ps1')
     $BaseOverlayJs = Join-Path $tempRoot 'base.js'
-    $OverlayVersion = 'agy-zh-v7'
+    $OverlayVersion = 'agy-zh-v8'
     [IO.File]::WriteAllText($BaseOverlayJs, ('window.__antigravityZhPatchInstalled = true;' + (' ' * 1100)))
     foreach ($Lang in @('zh-CN','zh-TW','ja','ko','es','fr','de','ru','pt-BR')) {
         $OverlayJs = Join-Path $tempRoot ($Lang + '.js')
