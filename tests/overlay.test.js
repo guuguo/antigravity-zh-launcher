@@ -131,3 +131,30 @@ console.log('PASS language switch ja -> ko -> original');
   assert.equal(early.label.nodeValue, 'Settings');
   console.log('PASS early-document null documentElement guard: zh-CN');
 }
+{
+  // 上游 Antigravity-Hans 词库已声明在当前文档生效时，zh-CN 内置词库不得 cleanup 掉它，
+  // 否则只存在于上游词库的文案（Turbo、This Computer 等）会漏翻。
+  // 冷启动时 document 仍处于 loading，上游主体会推迟到 DOMContentLoaded 才执行，
+  // 因此 __antigravityZhSetLang 往往还没挂载；守卫只能依赖同步置位的 installed 标记。
+  const f = fixture();
+  let cleaned = false;
+  f.window.__antigravityZhPatchInstalled = true;
+  f.window.__antigravityZhPatchCleanup = () => { cleaned = true; };
+  inject(f, 'zh-CN');
+  assert.equal(cleaned, false, 'zh-CN must not tear down the upstream overlay');
+  assert.equal(f.label.nodeValue, 'Settings');
+  assert.equal(f.tooltip.getAttribute('title'), 'Copy');
+  assert.equal(f.document.documentElement.lang, 'en');
+  assert.equal(f.window.__antigravityI18nInstalled, undefined);
+  console.log('PASS zh-CN defers to upstream Antigravity-Hans overlay before DOMContentLoaded');
+
+  // 内置 overlay 已经接管时仍应重新安装，避免本地切换语言后再也装不回来。
+  const g = fixture();
+  let reclaimed = false;
+  g.window.__antigravityZhPatchInstalled = true;
+  g.window.__antigravityI18nInstalled = true;
+  g.window.__antigravityZhPatchCleanup = () => { reclaimed = true; };
+  inject(g, 'zh-CN');
+  assert.equal(reclaimed, true, 'zh-CN must reclaim when the built-in overlay is already installed');
+  console.log('PASS zh-CN reclaims when the built-in overlay is already installed');
+}
